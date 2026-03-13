@@ -130,9 +130,45 @@ export default async function handler(req, res) {
         }));
       }
 
+    } else if (platform === "homeadvisor") {
+      // ===== HOMEADVISOR REVIEWS via Apify =====
+      // For HomeAdvisor, pass the full URL as the query, e.g.:
+      // ?platform=homeadvisor&query=https://www.homeadvisor.com/rated.ColormasterPainting.50192468.html
+      const actorId = "alizarin_refrigerator-owner~homeadvisor-scraper";
+
+      const runResponse = await fetch(
+        `https://api.apify.com/v2/acts/${actorId}/run-sync-get-dataset-items?token=${APIFY_API_TOKEN}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            startUrls: [{ url: query }],
+          }),
+        }
+      );
+
+      const data = await runResponse.json();
+
+      if (Array.isArray(data) && data.length > 0) {
+        // HomeAdvisor scrapers return varied formats — handle flexibly
+        const business = data[0];
+        const rawReviews = business.reviews || business.reviewsData || data;
+
+        if (Array.isArray(rawReviews)) {
+          reviews = rawReviews.slice(0, parseInt(limit)).map((r) => ({
+            author: r.author || r.reviewerName || r.name || "Homeowner",
+            rating: r.rating || r.stars || r.reviewRating || 5,
+            text: r.text || r.reviewText || r.comment || r.body || "",
+            date: r.date || r.reviewDate || "",
+            source: "HomeAdvisor",
+            profilePhoto: null,
+          }));
+        }
+      }
+
     } else {
       return res.status(400).json({
-        error: `Unknown platform: ${platform}. Use 'google', 'yelp', or 'facebook'.`,
+        error: `Unknown platform: ${platform}. Use 'google', 'yelp', 'facebook', or 'homeadvisor'.`,
       });
     }
 
