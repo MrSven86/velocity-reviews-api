@@ -1,23 +1,14 @@
-// Vercel Serverless Function — Cached Review Server
-// Serves pre-scraped reviews INSTANTLY from JSON files. No live scraping per visit.
+// REVIEWS ENDPOINT — serves cached reviews from Vercel KV
+// Instant loading, zero cost per visitor.
 //
-// USAGE:
-//   /api/reviews?client=colormaster        → serves data/colormaster.json
-//   /api/reviews?client=anchor-painting    → serves data/anchor-painting.json
-//
-// HOW TO ADD A NEW CLIENT:
-//   1. Scrape reviews once (via Apify dashboard or the /api/scrape endpoint)
-//   2. Save the JSON as data/{client-name}.json in the GitHub repo
-//   3. Vercel auto-deploys — done. Instant loading forever.
+// Usage: /api/reviews?client=colormaster
 
-import { readFileSync } from "fs";
-import { join } from "path";
+import { kv } from "@vercel/kv";
 
-export default function handler(req, res) {
+export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  // Cache for 1 hour at CDN level — truly instant for repeat visitors
   res.setHeader("Cache-Control", "s-maxage=3600, stale-while-revalidate=86400");
 
   if (req.method === "OPTIONS") return res.status(200).end();
@@ -26,27 +17,37 @@ export default function handler(req, res) {
   const { client } = req.query;
 
   if (!client) {
-    return res.status(400).json({
-      error: "Missing 'client' parameter",
-      usage: "/api/reviews?client=colormaster",
-      hint: "The client name must match a JSON file in the data/ folder",
-    });
+    // List all available clients
+    try {
+      const keys = await kv.keys("reviews:*");
+      const clients = keys.map((k) => k.replace("reviews:", ""));
+      return res.status(200).json({
+        message: "Provide a 'client' parameter",
+        usage: "/api/reviews?client=colormaster",
+        availableClients: clients,
+      });
+    } catch (e) {
+      return res.status(400).json({
+        error: "Missing 'client' parameter",
+        usage: "/api/reviews?client=colormaster",
+      });
+    }
   }
 
-  // Sanitize client name — only allow letters, numbers, dashes
-  const safeName = client.replace(/[^a-zA-Z0-9-]/g, "");
+  const safeName = client.replace(/[^a-zA-Z0-9-]/g, "").toLowerCase();
 
   try {
-    // Read the cached JSON file
-    const filePath = join(process.cwd(), "data", `${safeName}.json`);
-    const fileContent = readFileSync(filePath, "utf8");
-    const data = JSON.parse(fileContent);
+    const data = await kv.get(`reviews:${safeName}`);
+
+    if (!data) {
+      return res.status(404).json({
+        error: `No reviews found for '${safeName}'`,
+        hint: `Scrape first: /api/scrape?platform=google&query=Business+Name+City&client=${safeName}`,
+      });
+    }
 
     return res.status(200).json(data);
   } catch (error) {
-    return res.status(404).json({
-      error: `No reviews found for client '${safeName}'`,
-      hint: `Create a file at data/${safeName}.json in your GitHub repo`,
-    });
+    return res.status(500).json({ error: "Failed to read reviews", details: error.message });
   }
 }
