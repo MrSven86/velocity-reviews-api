@@ -1,39 +1,39 @@
-// Vercel Serverless Function — MANUAL Scrape Endpoint
-// NOT called by visitors. Only called by YOU when you want fresh reviews.
+// SCRAPE ENDPOINT — scrapes reviews ONCE and saves them to Vercel KV
+// Only used by YOU, not by visitors.
 //
-// USAGE:
-//   /api/scrape?platform=google&query=Color+Masters+Painting+Dallas+TX&limit=10
-//   /api/scrape?platform=homeadvisor&url=https://www.homeadvisor.com/rated.ColormasterPainting.50192468.html&limit=10
-//
-// WORKFLOW:
-//   1. Call this endpoint in your browser
-//   2. Copy the JSON output
-//   3. Save it as data/{client-name}.json in GitHub
-//   4. Done — visitors get instant loading from the cached file
+// Usage:
+//   /api/scrape?platform=google&query=Color+Masters+Painting+Dallas+TX&client=colormaster&limit=10
+//   /api/scrape?platform=homeadvisor&url=https://www.homeadvisor.com/rated.ColormasterPainting.50192468.html&client=colormaster&limit=10
+//   /api/scrape?platform=yelp&query=Color+Masters+Painting+Long+Branch+NJ&client=colormaster&limit=10
+
+import { kv } from "@vercel/kv";
+
+export const maxDuration = 120; // Allow up to 2 minutes for scraping
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
 
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
 
-  const { platform = "google", url, query, limit = "10" } = req.query;
+  const { platform = "google", url, query, client, limit = "10" } = req.query;
   const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN;
 
-  if (!APIFY_API_TOKEN) {
-    return res.status(500).json({ error: "APIFY_API_TOKEN not set" });
-  }
+  if (!APIFY_API_TOKEN) return res.status(500).json({ error: "APIFY_API_TOKEN not set" });
+  if (!client) return res.status(400).json({ error: "Missing 'client' param. Example: &client=colormaster" });
+
+  const safeName = client.replace(/[^a-zA-Z0-9-]/g, "").toLowerCase();
 
   try {
     let reviews = [];
     let source = platform;
 
     // ==========================================================
-    // GOOGLE — dedicated actor, reliable
+    // GOOGLE
     // ==========================================================
     if (platform === "google") {
       if (!query) return res.status(400).json({ error: "Google requires 'query' param" });
-
       source = "Google";
+
       const data = await runApifyActor("compass~crawler-google-places", {
         searchStringsArray: [query],
         maxReviews: parseInt(limit),
@@ -53,12 +53,12 @@ export default async function handler(req, res) {
       }
 
     // ==========================================================
-    // HOMEADVISOR — dedicated community actor
+    // HOMEADVISOR
     // ==========================================================
     } else if (platform === "homeadvisor") {
       if (!url) return res.status(400).json({ error: "HomeAdvisor requires 'url' param" });
-
       source = "HomeAdvisor";
+
       const data = await runApifyActor("alizarin_refrigerator-owner~homeadvisor-scraper", {
         startUrls: [{ url }],
       }, APIFY_API_TOKEN);
@@ -68,11 +68,10 @@ export default async function handler(req, res) {
         const rawReviews = business.reviews || business.reviewsData || data;
 
         if (Array.isArray(rawReviews)) {
-          // Deduplicate
           const seen = new Set();
           reviews = rawReviews
-            .filter(r => {
-              const text = (r.text || r.reviewText || r.comment || r.body || '');
+            .filter((r) => {
+              const text = r.text || r.reviewText || r.comment || r.body || "";
               const key = text.substring(0, 60).toLowerCase();
               if (!key || seen.has(key)) return false;
               seen.add(key);
@@ -91,15 +90,14 @@ export default async function handler(req, res) {
       }
 
     // ==========================================================
-    // YELP — dedicated actor
+    // YELP
     // ==========================================================
     } else if (platform === "yelp") {
       if (!url && !query) return res.status(400).json({ error: "Yelp requires 'url' or 'query'" });
-
       source = "Yelp";
-      const searchTerm = query || url;
+
       const data = await runApifyActor("yin~yelp-scraper", {
-        searchTerms: [searchTerm],
+        searchTerms: [query || url],
         maxReviews: parseInt(limit),
         maxItems: 1,
       }, APIFY_API_TOKEN);
@@ -119,22 +117,25 @@ export default async function handler(req, res) {
       }
 
     } else {
-      return res.status(400).json({
-        error: `Unknown platform: ${platform}`,
-        supported: ["google", "homeadvisor", "yelp"],
-      });
+      return res.status(400).json({ error: `Unknown platform: ${platform}. Use: google, homeadvisor, yelp` });
     }
 
-    // Return in the exact format needed for the data/ JSON files
+    // Save to Vercel KV
     const output = {
       success: true,
       source,
+      client: safeName,
       count: reviews.length,
       scrapedAt: new Date().toISOString(),
       reviews,
     };
 
-    return res.status(200).json(output);
+    await kv.set(`reviews:${safeName}`, output);
+
+    return res.status(200).json({
+      ...output,
+      message: `Saved ${reviews.length} reviews for '${safeName}'. Now available at /api/reviews?client=${safeName}`,
+    });
 
   } catch (error) {
     console.error("Scrape error:", error);
