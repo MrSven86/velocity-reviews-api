@@ -1,12 +1,8 @@
-// Vercel Serverless Function — Review Fetcher
-// Dedicated scrapers per platform for reliability.
+// Vercel Serverless Function — Review Fetcher with Debug Mode
 //
-// USAGE:
-//   HomeAdvisor: /api/reviews?platform=homeadvisor&url=https://www.homeadvisor.com/rated.ColormasterPainting.50192468.html
-//   Google:      /api/reviews?platform=google&query=Color+Masters+Painting+Dallas+TX
-//   Yelp:        /api/reviews?platform=yelp&url=https://www.yelp.com/biz/some-business
-//   BBB:         /api/reviews?platform=bbb&url=https://www.bbb.org/us/nj/some-business
-//   Any site:    /api/reviews?platform=universal&url=https://example.com/reviews
+// NORMAL:  /api/reviews?platform=homeadvisor&url=...&limit=6
+// DEBUG:   /api/reviews?platform=homeadvisor&url=...&debug=true
+// GOOGLE:  /api/reviews?platform=google&query=Business+Name+City+ST&limit=6
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -16,7 +12,7 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "GET") return res.status(405).json({ error: "Method not allowed" });
 
-  const { platform = "google", url, query, limit = "10" } = req.query;
+  const { platform = "google", url, query, limit = "10", debug } = req.query;
   const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN;
 
   if (!APIFY_API_TOKEN) {
@@ -27,10 +23,10 @@ export default async function handler(req, res) {
     let reviews = [];
 
     // ==========================================================
-    // GOOGLE — dedicated actor, proven reliable
+    // GOOGLE
     // ==========================================================
     if (platform === "google") {
-      if (!query) return res.status(400).json({ error: "Google requires 'query' param, e.g. ?platform=google&query=Business+Name+City+ST" });
+      if (!query) return res.status(400).json({ error: "Google requires 'query' param" });
 
       const actorId = "compass~crawler-google-places";
       const data = await runApifyActor(actorId, {
@@ -52,182 +48,135 @@ export default async function handler(req, res) {
       }
 
     // ==========================================================
-    // HOMEADVISOR — Puppeteer scraper with custom extraction
+    // HOMEADVISOR
     // ==========================================================
     } else if (platform === "homeadvisor") {
-      if (!url) return res.status(400).json({ error: "HomeAdvisor requires 'url' param with the full business page URL" });
+      if (!url) return res.status(400).json({ error: "HomeAdvisor requires 'url' param" });
 
-      // Make sure URL points to reviews section
       const reviewUrl = url.includes("#reviews") ? url : url.replace(/\.html.*$/, ".html#reviews");
-
       const actorId = "apify~web-scraper";
 
       const pageFunction = `
 async function pageFunction(context) {
   const { page, request, log } = context;
 
-  // Scroll down multiple times to trigger lazy-loaded reviews
-  for (let i = 0; i < 10; i++) {
-    await page.evaluate(() => window.scrollBy(0, 800));
-    await new Promise(r => setTimeout(r, 1500));
+  // Scroll to trigger lazy loads
+  for (let i = 0; i < 15; i++) {
+    await page.evaluate(() => window.scrollBy(0, 600));
+    await new Promise(r => setTimeout(r, 1000));
   }
-
-  // Additional wait for reviews to render
   await new Promise(r => setTimeout(r, 5000));
 
-  const reviews = await page.evaluate(() => {
-    const results = [];
+  const result = await page.evaluate(() => {
+    const debug = {};
+    debug.title = document.title;
+    debug.url = window.location.href;
+    debug.bodyLength = document.body.innerHTML.length;
 
-    // ---- METHOD 1: JSON-LD structured data ----
-    const scripts = document.querySelectorAll('script[type="application/ld+json"]');
-    for (const script of scripts) {
+    // Capture what classes exist on the page
+    const allClasses = new Set();
+    document.querySelectorAll('*').forEach(el => {
+      el.classList.forEach(c => {
+        if (c.toLowerCase().includes('review')) allClasses.add(c);
+      });
+    });
+    debug.reviewClasses = [...allClasses].slice(0, 50);
+
+    // Capture JSON-LD data
+    const jsonLdData = [];
+    document.querySelectorAll('script[type="application/ld+json"]').forEach(s => {
       try {
-        const data = JSON.parse(script.textContent);
-        const items = data['@graph'] || [data];
-        for (const item of items) {
-          const revs = item.review || item.reviews || [];
-          const arr = Array.isArray(revs) ? revs : [revs];
-          for (const r of arr) {
-            if (r && (r.reviewBody || r.description)) {
-              results.push({
-                author: (typeof r.author === 'string' ? r.author : r.author?.name) || '',
-                rating: parseFloat(r.reviewRating?.ratingValue || 5),
-                text: r.reviewBody || r.description || '',
-                date: r.datePublished || r.dateCreated || '',
-              });
+        const d = JSON.parse(s.textContent);
+        jsonLdData.push(JSON.stringify(d).substring(0, 500));
+      } catch(e) {}
+    });
+    debug.jsonLd = jsonLdData;
+
+    // Capture any elements with "review" in class/id
+    const reviewEls = document.querySelectorAll('[class*="review"], [class*="Review"], [id*="review"], [id*="Review"]');
+    debug.reviewElementCount = reviewEls.length;
+    debug.reviewElementSamples = [];
+    reviewEls.forEach((el, i) => {
+      if (i < 10) {
+        debug.reviewElementSamples.push({
+          tag: el.tagName,
+          class: el.className.substring(0, 100),
+          id: el.id,
+          textLength: el.textContent.length,
+          textPreview: el.textContent.substring(0, 200).trim(),
+          childCount: el.children.length,
+        });
+      }
+    });
+
+    // ---- Now try to extract actual reviews ----
+    const reviews = [];
+
+    // METHOD 1: JSON-LD
+    document.querySelectorAll('script[type="application/ld+json"]').forEach(script => {
+      try {
+        let dataList = JSON.parse(script.textContent);
+        if (!Array.isArray(dataList)) dataList = [dataList];
+        for (const data of dataList) {
+          const items = data['@graph'] ? data['@graph'] : [data];
+          for (const item of items) {
+            const revs = item.review || item.reviews || [];
+            const arr = Array.isArray(revs) ? revs : [revs];
+            for (const r of arr) {
+              if (r && (r.reviewBody || r.description || r.text)) {
+                reviews.push({
+                  author: (typeof r.author === 'string' ? r.author : r.author?.name) || '',
+                  rating: parseFloat(r.reviewRating?.ratingValue || 5),
+                  text: (r.reviewBody || r.description || r.text || '').substring(0, 500),
+                  date: r.datePublished || r.dateCreated || '',
+                  method: 'jsonld',
+                });
+              }
             }
           }
         }
-      } catch (e) {}
-    }
-    if (results.length > 0) return results;
+      } catch(e) {}
+    });
 
-    // ---- METHOD 2: HomeAdvisor specific selectors ----
-    // Try multiple possible review container patterns
-    const possibleContainers = [
-      // Newer HA markup
-      ...document.querySelectorAll('[class*="ReviewCard"], [class*="review-card"], [data-testid*="review"]'),
-      // Reviews section items
-      ...document.querySelectorAll('.ha-review, .review-item, [class*="ProReview"]'),
-      // Generic review-like containers with enough text
-      ...document.querySelectorAll('[class*="review"]'),
-    ];
+    // METHOD 2: Look for review containers
+    if (reviews.length === 0) {
+      reviewEls.forEach((container, i) => {
+        if (i >= 20) return;
+        const text = container.textContent.trim();
+        if (text.length >= 50 && text.length < 3000 && container.children.length < 30) {
+          // Try to find author within
+          let author = '';
+          const nameEl = container.querySelector('h4, h5, [class*="name"], [class*="Name"], [class*="author"], [class*="Author"]');
+          if (nameEl) author = nameEl.textContent.trim().substring(0, 60);
 
-    // Deduplicate containers by reference
-    const seen = new Set();
-    const containers = [];
-    for (const el of possibleContainers) {
-      if (!seen.has(el)) {
-        seen.add(el);
-        containers.push(el);
-      }
-    }
-
-    for (const container of containers) {
-      // Skip tiny containers (nav items, headers, etc)
-      if (container.textContent.length < 50) continue;
-      // Skip if it contains many child review containers (it's a wrapper)
-      const childReviews = container.querySelectorAll('[class*="review"]');
-      if (childReviews.length > 3) continue;
-
-      // Extract reviewer name - look for common patterns
-      let author = '';
-      const nameSelectors = [
-        '[class*="reviewer"] [class*="name"]',
-        '[class*="review-author"]',
-        '[class*="ReviewerName"]',
-        '[class*="author"]',
-        'h4', 'h5',
-        '[class*="Name"]',
-      ];
-      for (const sel of nameSelectors) {
-        const el = container.querySelector(sel);
-        if (el && el.textContent.trim().length > 1 && el.textContent.trim().length < 50) {
-          author = el.textContent.trim();
-          break;
-        }
-      }
-
-      // Extract rating
-      let rating = 5;
-      const ratingEl = container.querySelector('[class*="rating"], [class*="star"], [aria-label*="star"], [aria-label*="rating"]');
-      if (ratingEl) {
-        const ariaLabel = ratingEl.getAttribute('aria-label') || '';
-        const match = ariaLabel.match(/(\\d+\\.?\\d*)/);
-        if (match) rating = parseFloat(match[1]);
-        else {
-          const textMatch = ratingEl.textContent.match(/(\\d+\\.?\\d*)\\s*(?:out of|of|stars|\\/)/i);
-          if (textMatch) rating = parseFloat(textMatch[1]);
-        }
-        if (rating > 5) rating = 5;
-      }
-
-      // Extract review text - find the longest paragraph
-      let text = '';
-      const textSelectors = [
-        '[class*="review-text"]',
-        '[class*="ReviewText"]',
-        '[class*="review-body"]',
-        '[class*="review-content"]',
-        '[class*="description"]',
-        'p',
-      ];
-      for (const sel of textSelectors) {
-        const els = container.querySelectorAll(sel);
-        for (const el of els) {
-          const t = el.textContent.trim();
-          if (t.length > text.length && t.length > 20) {
-            text = t;
+          // Try to find rating
+          let rating = 5;
+          const ratingEl = container.querySelector('[aria-label*="star"], [aria-label*="rating"], [class*="rating"], [class*="star"]');
+          if (ratingEl) {
+            const m = (ratingEl.getAttribute('aria-label') || ratingEl.textContent || '').match(/(\\d+\\.?\\d*)/);
+            if (m) rating = Math.min(parseFloat(m[1]), 5);
           }
-        }
-      }
 
-      // If we still don't have text, get all text and remove the author/rating parts
-      if (!text) {
-        text = container.textContent.trim();
-        if (author) text = text.replace(author, '').trim();
-        // Clean up
-        text = text.replace(/^[\\s\\n]+|[\\s\\n]+$/g, '').replace(/\\n{2,}/g, ' ');
-      }
+          // Try to find date
+          let date = '';
+          const dateEl = container.querySelector('time, [class*="date"], [class*="Date"]');
+          if (dateEl) date = (dateEl.getAttribute('datetime') || dateEl.textContent || '').trim().substring(0, 30);
 
-      // Skip if text is too short
-      if (text.length < 30) continue;
-
-      // Extract date
-      let date = '';
-      const dateEl = container.querySelector('[class*="date"], time, [datetime]');
-      if (dateEl) {
-        date = dateEl.getAttribute('datetime') || dateEl.textContent.trim();
-      }
-
-      results.push({ author, rating, text, date });
-    }
-
-    if (results.length > 0) return results;
-
-    // ---- METHOD 3: Extract ALL text blocks that look like reviews ----
-    // Last resort: find any substantial text blocks near star icons
-    const allElements = document.querySelectorAll('p, div, span');
-    for (const el of allElements) {
-      const t = el.textContent.trim();
-      if (t.length >= 60 && t.length <= 2000) {
-        // Check if nearby elements have star-related content
-        const parent = el.parentElement;
-        if (parent && parent.innerHTML.includes('star')) {
-          results.push({
-            author: '',
-            rating: 5,
-            text: t,
-            date: '',
+          reviews.push({
+            author: author || 'Unknown',
+            rating,
+            text: text.substring(0, 500),
+            date,
+            method: 'dom',
           });
         }
-      }
+      });
     }
 
-    return results;
+    return { debug, reviews };
   });
 
-  return { url: request.url, reviews };
+  return result;
 }
       `;
 
@@ -244,14 +193,23 @@ async function pageFunction(context) {
         ]`,
       }, APIFY_API_TOKEN);
 
+      // If debug mode, return everything
+      if (debug) {
+        return res.status(200).json({
+          raw: data,
+          note: "This is debug output. Check raw[0].debug for page info and raw[0].reviews for extracted reviews.",
+        });
+      }
+
+      // Normal mode - extract reviews
       if (Array.isArray(data) && data.length > 0 && data[0].reviews) {
         const seen = new Set();
         reviews = data[0].reviews
           .filter((r) => {
-            const key = r.text.substring(0, 60).toLowerCase().replace(/\s+/g, '');
-            if (seen.has(key)) return false;
+            const key = (r.text || '').substring(0, 60).toLowerCase().replace(/\s+/g, '');
+            if (!key || seen.has(key)) return false;
             seen.add(key);
-            return r.text.length >= 30;
+            return (r.text || '').length >= 30;
           })
           .slice(0, parseInt(limit))
           .map((r) => ({
@@ -264,117 +222,8 @@ async function pageFunction(context) {
           }));
       }
 
-    // ==========================================================
-    // YELP — Puppeteer scraper
-    // ==========================================================
-    } else if (platform === "yelp") {
-      if (!url) return res.status(400).json({ error: "Yelp requires 'url' param" });
-
-      const actorId = "apify~web-scraper";
-      const pageFunction = `
-async function pageFunction(context) {
-  const { page, request } = context;
-  await new Promise(r => setTimeout(r, 5000));
-
-  const reviews = await page.evaluate(() => {
-    const results = [];
-    // Try JSON-LD first
-    const scripts = document.querySelectorAll('script[type="application/ld+json"]');
-    for (const script of scripts) {
-      try {
-        const data = JSON.parse(script.textContent);
-        const items = data['@graph'] || [data];
-        for (const item of items) {
-          const revs = item.review || [];
-          const arr = Array.isArray(revs) ? revs : [revs];
-          for (const r of arr) {
-            if (r && r.reviewBody) {
-              results.push({
-                author: (typeof r.author === 'string' ? r.author : r.author?.name) || 'Anonymous',
-                rating: parseFloat(r.reviewRating?.ratingValue || 5),
-                text: r.reviewBody,
-                date: r.datePublished || '',
-              });
-            }
-          }
-        }
-      } catch (e) {}
-    }
-    return results;
-  });
-  return { url: request.url, reviews };
-}
-      `;
-
-      const data = await runApifyActor(actorId, {
-        startUrls: [{ url }],
-        pageFunction,
-        proxyConfiguration: { useApifyProxy: true },
-        maxRequestsPerCrawl: 1,
-      }, APIFY_API_TOKEN);
-
-      if (Array.isArray(data) && data.length > 0 && data[0].reviews) {
-        reviews = dedup(data[0].reviews).slice(0, parseInt(limit)).map(r => ({
-          ...r, source: "Yelp", profilePhoto: null,
-        }));
-      }
-
-    // ==========================================================
-    // BBB — Puppeteer scraper
-    // ==========================================================
-    } else if (platform === "bbb") {
-      if (!url) return res.status(400).json({ error: "BBB requires 'url' param" });
-
-      const actorId = "apify~web-scraper";
-      const pageFunction = `
-async function pageFunction(context) {
-  const { page, request } = context;
-  for (let i = 0; i < 5; i++) {
-    await page.evaluate(() => window.scrollBy(0, 600));
-    await new Promise(r => setTimeout(r, 1500));
-  }
-  await new Promise(r => setTimeout(r, 3000));
-
-  const reviews = await page.evaluate(() => {
-    const results = [];
-    const containers = document.querySelectorAll('.customer-review, [class*="ReviewCard"], [class*="review-item"]');
-    containers.forEach(c => {
-      const text = (c.querySelector('[class*="review-text"], [class*="body"], p') || {}).textContent?.trim() || '';
-      if (text.length < 20) return;
-      const author = (c.querySelector('[class*="reviewer"], [class*="name"], h4') || {}).textContent?.trim() || '';
-      const dateEl = c.querySelector('[class*="date"], time');
-      const date = dateEl ? (dateEl.getAttribute('datetime') || dateEl.textContent.trim()) : '';
-      let rating = 5;
-      const ratingEl = c.querySelector('[class*="rating"], [class*="star"]');
-      if (ratingEl) {
-        const m = (ratingEl.getAttribute('aria-label') || ratingEl.textContent).match(/(\\d+\\.?\\d*)/);
-        if (m) rating = Math.min(parseFloat(m[1]), 5);
-      }
-      results.push({ author, rating, text, date });
-    });
-    return results;
-  });
-  return { url: request.url, reviews };
-}
-      `;
-
-      const data = await runApifyActor(actorId, {
-        startUrls: [{ url }],
-        pageFunction,
-        proxyConfiguration: { useApifyProxy: true },
-        maxRequestsPerCrawl: 1,
-      }, APIFY_API_TOKEN);
-
-      if (Array.isArray(data) && data.length > 0 && data[0].reviews) {
-        reviews = dedup(data[0].reviews).slice(0, parseInt(limit)).map(r => ({
-          ...r, source: "BBB", profilePhoto: null,
-        }));
-      }
-
     } else {
-      return res.status(400).json({
-        error: `Unknown platform: ${platform}. Supported: google, homeadvisor, yelp, bbb`,
-      });
+      return res.status(400).json({ error: `Unknown platform: ${platform}` });
     }
 
     return res.status(200).json({
@@ -391,7 +240,6 @@ async function pageFunction(context) {
   }
 }
 
-// ---- Helper: Run an Apify actor and return dataset items ----
 async function runApifyActor(actorId, input, token) {
   const response = await fetch(
     `https://api.apify.com/v2/acts/${actorId}/run-sync-get-dataset-items?token=${token}&timeout=120`,
@@ -402,15 +250,4 @@ async function runApifyActor(actorId, input, token) {
     }
   );
   return response.json();
-}
-
-// ---- Helper: Deduplicate reviews by text ----
-function dedup(reviews) {
-  const seen = new Set();
-  return reviews.filter((r) => {
-    const key = (r.text || '').substring(0, 60).toLowerCase().replace(/\s+/g, '');
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
 }
