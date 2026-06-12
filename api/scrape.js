@@ -36,8 +36,11 @@ export default async function handler(req, res) {
       if (!query && !url) return res.status(400).json({ error: "Google requires 'query' or 'url' param" });
       source = "Google";
 
+      const mainLimit  = parseInt(limit);
+      const fetchLimit = Math.max(mainLimit, 100); // always scan 100 to find photo picks
+
       const actorInput = {
-        maxReviews: parseInt(limit),
+        maxReviews: fetchLimit,
         reviewsSort: "newest",
         language: "en",
         maxCrawledPlacesPerSearch: 1,
@@ -51,7 +54,8 @@ export default async function handler(req, res) {
         const place = data[0];
         totalReviews = place.reviewsCount || place.totalReviews || null;
         averageRating = place.totalScore || place.rating || null;
-        reviews = place.reviews.slice(0, parseInt(limit)).map((r) => ({
+
+        const mapReview = (r) => ({
           author: r.name || r.author || "Anonymous",
           rating: r.stars || r.rating || 5,
           text: r.text || r.reviewText || "",
@@ -59,8 +63,39 @@ export default async function handler(req, res) {
           source: "Google",
           profilePhoto: r.reviewerPhotoUrl || r.profilePhoto || null,
           images: Array.isArray(r.reviewImageUrls) ? r.reviewImageUrls :
-                  Array.isArray(r.images) ? r.images.map(function(img){ return img.imageUrl || img.url || img; }) : [],
-        }));
+                  Array.isArray(r.images) ? r.images.map((img) => img.imageUrl || img.url || img) : [],
+        });
+
+        const allMapped   = place.reviews.map(mapReview);
+        const mainReviews = allMapped.slice(0, mainLimit);
+        const mainIds     = new Set(mainReviews.map((r) => r.author + "|" + r.date));
+
+        // Collect up to 6 photo picks: 4-5 star + has images, not already in main feed
+        const photoPicks = allMapped
+          .filter((r) => r.rating >= 4 && r.images.length > 0 && !mainIds.has(r.author + "|" + r.date))
+          .slice(0, 6);
+
+        // If fewer than 6, preserve qualifying picks from the previous scrape so the bucket never drains
+        if (photoPicks.length < 6) {
+          const prev = await kv.get(`reviews:${safeName}`);
+          if (prev && Array.isArray(prev.reviews)) {
+            const pickIds = new Set(photoPicks.map((r) => r.author + "|" + r.date));
+            for (const old of prev.reviews) {
+              if (photoPicks.length >= 6) break;
+              if (
+                old.images && old.images.length > 0 &&
+                old.rating >= 4 &&
+                !mainIds.has(old.author + "|" + old.date) &&
+                !pickIds.has(old.author + "|" + old.date)
+              ) {
+                photoPicks.push(old);
+                pickIds.add(old.author + "|" + old.date);
+              }
+            }
+          }
+        }
+
+        reviews = [...mainReviews, ...photoPicks];
       }
 
     // ==========================================================
