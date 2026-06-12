@@ -58,6 +58,8 @@ export default async function handler(req, res) {
           date: r.publishedAtDate || r.date || "",
           source: "Google",
           profilePhoto: r.reviewerPhotoUrl || r.profilePhoto || null,
+          images: Array.isArray(r.reviewImageUrls) ? r.reviewImageUrls :
+                  Array.isArray(r.images) ? r.images.map(function(img){ return img.imageUrl || img.url || img; }) : [],
         }));
       }
 
