@@ -184,8 +184,6 @@ export default async function handler(req, res) {
     return res.status(200).json({
       ...output,
       message: `Saved ${reviews.length} reviews for '${safeName}'. Now available at /api/reviews?client=${safeName}`,
-      _debug_first_review_keys: output.reviews[0] ? Object.keys(output.reviews[0]) : [],
-      _debug_first_review_url: output.reviews[0] ? output.reviews[0].reviewUrl : null,
     });
 
   } catch (error) {
