@@ -40,7 +40,8 @@ export default async function handler(req, res) {
     const batch = clients.slice(i, i + BATCH_SIZE);
 
     const promises = batch.map((client) => {
-      const scrapeUrl = `${baseUrl}/api/scrape?platform=google&query=${encodeURIComponent(client.query)}&client=${client.id}&limit=${client.limit || 8}`;
+      const param = client.url ? `url=${encodeURIComponent(client.url)}` : `query=${encodeURIComponent(client.query)}`;
+      const scrapeUrl = `${baseUrl}/api/scrape?platform=google&${param}&client=${client.id}&limit=${client.limit || 8}`;
 
       // Fire the request — don't wait for full response
       return fetch(scrapeUrl)

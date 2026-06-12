@@ -31,15 +31,14 @@ export default async function handler(req, res) {
     // GOOGLE
     // ==========================================================
     if (platform === "google") {
-      if (!query) return res.status(400).json({ error: "Google requires 'query' param" });
+      if (!query && !url) return res.status(400).json({ error: "Google requires 'query' or 'url' param" });
       source = "Google";
 
-      const data = await runApifyActor("compass~crawler-google-places", {
-        searchStringsArray: [query],
-        maxReviews: parseInt(limit),
-        language: "en",
-        maxCrawledPlacesPerSearch: 1,
-      }, APIFY_API_TOKEN);
+      const actorInput = { maxReviews: parseInt(limit), language: "en", maxCrawledPlacesPerSearch: 1 };
+      if (url) actorInput.startUrls = [{ url }];
+      else actorInput.searchStringsArray = [query];
+
+      const data = await runApifyActor("compass~crawler-google-places", actorInput, APIFY_API_TOKEN);
 
       if (Array.isArray(data) && data.length > 0 && data[0].reviews) {
         reviews = data[0].reviews.slice(0, parseInt(limit)).map((r) => ({
