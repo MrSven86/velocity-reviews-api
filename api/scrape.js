@@ -26,6 +26,8 @@ export default async function handler(req, res) {
   try {
     let reviews = [];
     let source = platform;
+    let totalReviews = null;
+    let averageRating = null;
 
     // ==========================================================
     // GOOGLE
@@ -34,14 +36,22 @@ export default async function handler(req, res) {
       if (!query && !url) return res.status(400).json({ error: "Google requires 'query' or 'url' param" });
       source = "Google";
 
-      const actorInput = { maxReviews: parseInt(limit), language: "en", maxCrawledPlacesPerSearch: 1 };
+      const actorInput = {
+        maxReviews: parseInt(limit),
+        reviewsSort: "newest",
+        language: "en",
+        maxCrawledPlacesPerSearch: 1,
+      };
       if (url) actorInput.startUrls = [{ url }];
       else actorInput.searchStringsArray = [query];
 
       const data = await runApifyActor("compass~crawler-google-places", actorInput, APIFY_API_TOKEN);
 
       if (Array.isArray(data) && data.length > 0 && data[0].reviews) {
-        reviews = data[0].reviews.slice(0, parseInt(limit)).map((r) => ({
+        const place = data[0];
+        totalReviews = place.reviewsCount || place.totalReviews || null;
+        averageRating = place.totalScore || place.rating || null;
+        reviews = place.reviews.slice(0, parseInt(limit)).map((r) => ({
           author: r.name || r.author || "Anonymous",
           rating: r.stars || r.rating || 5,
           text: r.text || r.reviewText || "",
@@ -125,6 +135,8 @@ export default async function handler(req, res) {
       source,
       client: safeName,
       count: reviews.length,
+      totalReviews,
+      averageRating,
       scrapedAt: new Date().toISOString(),
       reviews,
     };
