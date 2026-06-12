@@ -62,6 +62,7 @@ export default async function handler(req, res) {
           date: r.publishedAtDate || r.date || "",
           source: "Google",
           profilePhoto: r.reviewerPhotoUrl || r.profilePhoto || null,
+          reviewUrl: r.reviewUrl || null,
           images: Array.isArray(r.reviewImageUrls) ? r.reviewImageUrls :
                   Array.isArray(r.images) ? r.images.map((img) => img.imageUrl || img.url || img) : [],
         });
