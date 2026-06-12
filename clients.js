@@ -6,16 +6,11 @@
 // limit:    how many reviews to pull (6-10 is good)
 
 export const clients = [
-  // {
-  //   id: "colormaster",
-  //   query: "Color Master Painting Long Branch NJ",
-  //   limit: 8,
-  // },
-  // {
-  //   id: "mediamind",
-  //   query: "MediaMind Uppsala",
-  //   limit: 8,
-  // },
+  {
+    id: "jts-pressure-washing",
+    query: "JT's Pressure Washing Wesley Chapel FL",
+    limit: 8,
+  },
 
   // ===== ADD NEW CLIENTS BELOW =====
   // {
