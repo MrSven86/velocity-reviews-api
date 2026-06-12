@@ -62,7 +62,7 @@ export default async function handler(req, res) {
           date: r.publishedAtDate || r.date || "",
           source: "Google",
           profilePhoto: r.reviewerPhotoUrl || r.profilePhoto || null,
-          reviewUrl: r.reviewUrl || null,
+          reviewUrl: r.reviewUrl || r.url || r.reviewerUrl || (r.reviewer && (r.reviewer.url || r.reviewer.profileUrl)) || null,
           images: Array.isArray(r.reviewImageUrls) ? r.reviewImageUrls :
                   Array.isArray(r.images) ? r.images.map((img) => img.imageUrl || img.url || img) : [],
         });
@@ -184,6 +184,8 @@ export default async function handler(req, res) {
     return res.status(200).json({
       ...output,
       message: `Saved ${reviews.length} reviews for '${safeName}'. Now available at /api/reviews?client=${safeName}`,
+      _debug_first_review_keys: output.reviews[0] ? Object.keys(output.reviews[0]) : [],
+      _debug_first_review_url: output.reviews[0] ? output.reviews[0].reviewUrl : null,
     });
 
   } catch (error) {
