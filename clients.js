@@ -13,9 +13,9 @@ export const clients = [
   },
 
   // ===== ADD NEW CLIENTS BELOW =====
-  // {
-  //   id: "client-name",
-  //   query: "Business Name City State",
-  //   limit: 8,
-  // },
+  {
+    id: "mb-plumbing-columbus",
+    url: "https://www.google.com/maps/place/MB+Plumbing/@39.9831679,-83.1556224,11z/data=!4m10!1m2!2m1!1sMB+Plumbing,+Columbus+OH+!3m6!1s0x88388fb6ebe88335:0xbcc88ced2209793!8m2!3d39.9378873!4d-82.997114!15sChhNQiBQbHVtYmluZywgQ29sdW1idXMgT0iSAQdwbHVtYmVy4AEA!16s%2Fg%2F11jp043gg8",
+    limit: 48,
+  },
 ];
